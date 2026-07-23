@@ -113,43 +113,23 @@ def get_im2col_matrix_3d(image, f):
             
     return X_col
 
-def conv2d_multichannel(image, filters):
-    C, H, W = image.shape
-    n_filters, filter_C, f, _ = filters.shape
-
-    assert C == filter_C, f"Channel mismatch! Image has {C}, filters expect {filter_C}"
-
-    out_H = H - f + 1
-    out_W = W - f + 1
-
-    X_col = get_im2col_matrix_3d(image, f)
-    W_col = filters.reshape(n_filters, -1)
-
-    out_col = W_col @ X_col.T
-
-    output = out_col.reshape(n_filters, out_H, out_W)
-
-    return output
-
 def conv2d_multichannel(image, filters, biases=None):
     C, H, W = image.shape
     n_filters, filter_C, f, _ = filters.shape
-    
+
     assert C == filter_C, f"Channel mismatch! Image has {C}, filters expect {filter_C}"
-    
+
     out_H = H - f + 1
     out_W = W - f + 1
-    
+
     X_col = get_im2col_matrix_3d(image, f)
-    
     W_col = filters.reshape(n_filters, -1)
-    
     out_col = W_col @ X_col.T
     output = out_col.reshape(n_filters, out_H, out_W)
-    
+
     if biases is not None:
         output = output + biases
-        
+
     return output
 
 def conv_backward_single(dOut, image, filt):
@@ -164,16 +144,82 @@ def conv_backward_single(dOut, image, filt):
 
     return dImage, dFilt
 
-image = np.random.randint(1, 21, size=(4, 26, 26))       # 4-channel, 26x26
-filters = np.random.randint(1, 21, size=(6, 4, 3, 3))    # 6 filters, each seeing 4 channels, 3x3
+def conv_backward_multi(dOut, image, filters):
+    """
+    dOut: (n_filters, out_H, out_W) - gradient flowing in
+    image: (C, H, W) - cached input from forward pass
+    filters: (n_filters, C, f, f) - filters used in forward pass
+    Returns: dImage (C,H,W), dFilters (n_filters,C,f,f), dBias (n_filters,1,1)
+    """
+    n_filters, C, f, _ = filters.shape
+    H, W = image.shape[1], image.shape[2]
+    pad = f - 1
 
-output = conv2d_multichannel(image, filters)
-print(output.shape)  # expect (6, 24, 24)
+    dImage = np.zeros((C, H, W))
+    for k in range(n_filters):
+        padded_dOut_k = np.pad(dOut[k], pad_width=pad, mode='constant')
+        flipped_filt_k = filters[k][:, ::-1, ::-1]
+        dImage += conv2d_multi_filter(padded_dOut_k, flipped_filt_k)
 
-biases = np.array([10, 20, 30, 40, 50, 60]).reshape(6, 1, 1)
-output_with_bias = conv2d_multichannel(image, filters, biases)
-output_no_bias = conv2d_multichannel(image, filters, None)
+    dOut_col = dOut.reshape(n_filters, -1)
+    X_col = get_im2col_matrix_3d(image, f)
+    dFilters = (dOut_col @ X_col).reshape(n_filters, C, f, f)
 
-# each filter's output should be shifted by exactly its bias, everywhere
-diff = output_with_bias - output_no_bias
-print(np.allclose(diff[0], 10), np.allclose(diff[1], 20), np.allclose(diff[5], 60))
+    dBias = np.sum(dOut, axis=(1, 2), keepdims=True)
+
+    return dImage, dFilters, dBias
+
+class Conv2D:
+    def __init__(self, in_channels, n_filters, f):
+        self.in_channels = in_channels
+        self.n_filters = n_filters
+        self.f = f
+
+        fan_in = in_channels * f * f
+        self.W = np.random.randn(n_filters, in_channels, f, f) * np.sqrt(2 / fan_in)
+        self.b = np.zeros((n_filters, 1, 1))
+
+        self.X_batch = None
+        self.dW = None
+        self.db = None
+
+    def forward(self, X_batch):
+        self.X_batch = X_batch
+        m = X_batch.shape[0]
+        batch_outputs = []
+
+        for i in range(m):
+            image = X_batch[i]
+            out = conv2d_multichannel(image, self.W, self.b)
+            batch_outputs.append(out)
+
+        return np.stack(batch_outputs, axis=0)
+
+    def backward(self, dOut_batch):
+        m = self.X_batch.shape[0]
+
+        self.dW = np.zeros_like(self.W)
+        self.db = np.zeros_like(self.b)
+        dX_batch = np.zeros_like(self.X_batch)
+
+        pad = self.f - 1
+
+        for i in range(m):
+            image = self.X_batch[i]
+            dOut = dOut_batch[i]
+
+            self.db += np.sum(dOut, axis=(1, 2), keepdims=True)
+
+            dOut_col = dOut.reshape(self.n_filters, -1)
+            X_col = get_im2col_matrix_3d(image, self.f)
+            self.dW += (dOut_col @ X_col).reshape(self.W.shape)
+
+            for k in range(self.n_filters):
+                padded_dOut_k = np.pad(dOut[k], pad_width=pad, mode='constant')
+                flipped_filt_k = self.W[k, :, ::-1, ::-1]
+                dX_batch[i] += conv2d_multi_filter(padded_dOut_k, flipped_filt_k)
+
+        self.dW /= m
+        self.db /= m
+
+        return dX_batch

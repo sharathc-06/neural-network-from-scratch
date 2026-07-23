@@ -95,3 +95,121 @@ class Dropout:
             return dA
             
         return dA * self.mask
+
+class MaxPool2D:
+    def __init__(self, pool_size):
+        self.pool_size = pool_size
+        self.X_batch = None  # Cache for the backward pass
+
+    def forward(self, X_batch):
+        """
+        X_batch: shape (m, C, H, W)
+        Returns: shape (m, C, out_H, out_W)
+        """
+        # 1. Cache the input for the backward pass!
+        self.X_batch = X_batch
+        
+        # 2. Extract dimensions
+        m, C, H, W = X_batch.shape
+        out_H = H // self.pool_size
+        out_W = W // self.pool_size
+        
+        # 3. Initialize the output volume
+        output = np.zeros((m, C, out_H, out_W))
+        
+        # 4. Loop over every image in the batch
+        for b in range(m):
+            # Loop over every channel in the image
+            for c in range(C):
+                
+                # EXACTLY your logic, just applied to X_batch[b, c]
+                for i in range(out_H):
+                    for j in range(out_W):
+                        r_start = i * self.pool_size
+                        r_end = (i + 1) * self.pool_size
+                        c_start = j * self.pool_size
+                        c_end = (j + 1) * self.pool_size
+                        
+                        # Extract the window
+                        window = X_batch[b, c, r_start:r_end, c_start:c_end]
+                        
+                        # Find the max and store it
+                        output[b, c, i, j] = np.max(window)
+                        
+        return output
+
+    def backward(self, dOut_batch):
+        """
+        dOut_batch: shape (m, C, out_H, out_W)
+        Returns: dX_batch, shape (m, C, H, W)
+        """
+        # 1. Extract dimensions from our cached input
+        m, C, H, W = self.X_batch.shape
+        out_H, out_W = dOut_batch.shape[2], dOut_batch.shape[3]
+        
+        # 2. Initialize the gradient volume for the input
+        dX_batch = np.zeros((m, C, H, W))
+        
+        # 3. Loop over every image and channel
+        for b in range(m):
+            for c in range(C):
+                
+                # EXACTLY your backward logic
+                for i in range(out_H):
+                    for j in range(out_W):
+                        r_start = i * self.pool_size
+                        r_end = (i + 1) * self.pool_size
+                        c_start = j * self.pool_size
+                        c_end = (j + 1) * self.pool_size
+                        
+                        # Look at the original window from the forward pass
+                        window = self.X_batch[b, c, r_start:r_end, c_start:c_end]
+                        
+                        # Create the mask (True where the max was, False elsewhere)
+                        mask = (window == np.max(window))
+                        
+                        # Route the incoming gradient ONLY to the max pixel(s)
+                        dX_batch[b, c, r_start:r_end, c_start:c_end] = mask * dOut_batch[b, c, i, j]
+                        
+        return dX_batch
+
+class Flatten:
+    def __init__(self):
+        # We must cache the original shape so we know exactly how to 
+        # "un-flatten" the gradients during the backward pass!
+        self.orig_shape = None  
+
+    def forward(self, X_batch):
+        """
+        X_batch: shape (m, C, H, W)
+        Returns: shape (C*H*W, m) - perfectly formatted for a Dense layer!
+        """
+        # 1. Cache the original shape (m, C, H, W)
+        self.orig_shape = X_batch.shape
+        m, C, H, W = self.orig_shape
+        
+        # 2. Flatten the spatial and channel dimensions for each image 
+        # Using -1 tells numpy to automatically compute C * H * W
+        # Shape becomes: (m, C*H*W)
+        X_reshaped = X_batch.reshape(m, -1)
+        
+        # 3. Transpose so the batch dimension is last
+        # Shape becomes: (C*H*W, m)
+        X_flat = X_reshaped.T
+        
+        return X_flat
+
+    def backward(self, dOut):
+        """
+        dOut: shape (C*H*W, m) - gradient flowing backward from the Dense layer
+        Returns: shape (m, C, H, W) - gradient mapped back to physical space
+        """
+        # 1. Transpose back to put the batch dimension first
+        # Shape becomes: (m, C*H*W)
+        dX_reshaped = dOut.T
+        
+        # 2. Reshape the flat lists back into the original 4D volumes!
+        # Shape becomes: (m, C, H, W)
+        dX_batch = dX_reshaped.reshape(self.orig_shape)
+        
+        return dX_batch

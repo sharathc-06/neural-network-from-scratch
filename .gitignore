@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*-ubyte
+*-ubyte.gz
+*.idx3-ubyte
+*.idx1-ubyte
